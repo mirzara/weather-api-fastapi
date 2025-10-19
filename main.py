@@ -1,10 +1,20 @@
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+import os
 import requests
 import xml.etree.ElementTree as ET
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
-app = FastAPI(title="Weather API", version="1.0.0")
+load_dotenv()
+
+app = FastAPI(title="Weather API Service", version="1.0.0")
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = "weatherapi-com.p.rapidapi.com"
+
+if not RAPIDAPI_KEY:
+    raise RuntimeError("Missing RAPIDAPI_KEY in environment variables.")
 
 class WeatherRequest(BaseModel):
     city: str = Field(..., description="City name for weather lookup")
@@ -12,84 +22,62 @@ class WeatherRequest(BaseModel):
         "json", description="Response format: 'json' or 'xml'", regex="^(json|xml)$"
     )
 
-
-def get_coordinates(city: str):
+def get_weather_data(city: str):
     """
-    Get latitude and longitude for a city using Open-Meteo geocoding API.
+    Fetch weather data from RapidAPI's WeatherAPI endpoint.
     """
-    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
-    response = requests.get(geo_url, timeout=10)
+    url = f"https://{RAPIDAPI_HOST}/current.json"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+    }
+    params = {"q": city}
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Error fetching coordinates.")
-
-    data = response.json()
-    if "results" not in data or not data["results"]:
-        raise HTTPException(status_code=404, detail="City not found.")
-
-    city_data = data["results"][0]
-    return city_data["latitude"], city_data["longitude"], city_data["name"], city_data.get("country", "")
-
-
-def get_weather(latitude: float, longitude: float):
-    """
-    Get current weather using Open-Meteo API.
-    """
-    weather_url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={latitude}&longitude={longitude}&current_weather=true"
-    )
-    response = requests.get(weather_url, timeout=10)
-
+    response = requests.get(url, headers=headers, params=params, timeout=10)
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Error fetching weather data.")
 
     data = response.json()
-    return data["current_weather"]["temperature"]
+    if "location" not in data or "current" not in data:
+        raise HTTPException(status_code=404, detail="Invalid city or missing data.")
+
+    return data
 
 
-def convert_to_xml(weather: float, city: str, lat: float, lon: float) -> str:
+def to_xml(data: dict) -> str:
     """
-    Convert weather data into XML string.
+    Convert weather JSON data to XML string.
     """
     root = ET.Element("root")
 
-    temp_elem = ET.SubElement(root, "Temperature")
-    temp_elem.text = f"{weather} C"
-
-    city_elem = ET.SubElement(root, "City")
-    city_elem.text = city
-
-    lat_elem = ET.SubElement(root, "Latitude")
-    lat_elem.text = str(round(lat, 4))
-
-    lon_elem = ET.SubElement(root, "Longitude")
-    lon_elem.text = str(round(lon, 4))
+    ET.SubElement(root, "Temperature").text = f"{data['Weather']}"
+    ET.SubElement(root, "City").text = data["City"]
+    ET.SubElement(root, "Latitude").text = str(data["Latitude"])
+    ET.SubElement(root, "Longitude").text = str(data["Longitude"])
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
 
 @app.post("/getCurrentWeather")
 def get_current_weather(request_data: WeatherRequest):
     """
-    Get current weather, latitude, and longitude for a given city.
-    Response format: JSON or XML.
+    Fetch current weather details for a given city.
+    Supports JSON and XML output.
     """
     city = request_data.city
     output_format = request_data.output_format.lower()
 
-    latitude, longitude, city_name, country = get_coordinates(city)
-    weather = get_weather(latitude, longitude)
-    full_city_name = f"{city_name}, {country}"
+    weather_data = get_weather_data(city)
+
+    response_data = {
+        "Weather": f"{weather_data['current']['temp_c']} C",
+        "Latitude": weather_data["location"]["lat"],
+        "Longitude": weather_data["location"]["lon"],
+        "City": f"{weather_data['location']['name']}, {weather_data['location']['country']}",
+    }
 
     if output_format == "json":
-        return JSONResponse(
-            content={
-                "Weather": f"{weather} C",
-                "Latitude": latitude,
-                "Longitude": longitude,
-                "City": full_city_name,
-            }
-        )
+        return JSONResponse(content=response_data)
 
-    xml_response = convert_to_xml(weather, full_city_name, latitude, longitude)
-    return Response(content=xml_response, media_type="application/xml")
+    xml_data = to_xml(response_data)
+    return Response(content=xml_data, media_type="application/xml")

@@ -19,7 +19,9 @@ if not RAPIDAPI_KEY:
 class WeatherRequest(BaseModel):
     city: str = Field(..., description="City name for weather lookup")
     output_format: str = Field(
-        "json", description="Response format: 'json' or 'xml'", regex="^(json|xml)$"
+        "json",
+        description="Response format: 'json' or 'xml'",
+        pattern="^(json|xml)$",  # ✅ replaced regex with pattern
     )
 
 def get_weather_data(city: str):
